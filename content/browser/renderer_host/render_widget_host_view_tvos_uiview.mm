@@ -515,9 +515,14 @@ RemoteButton remoteButtonFromPressType(UIPressType type) {
   CHECK_EQ(textField, _textFieldForAllTextInput);
   if (reason == UITextFieldDidEndEditingReasonCommitted) {
     const ui::mojom::TextInputState* state = [self editState];
-    const gfx::Range range = state ? gfx::Range(0, state->selection.GetMax())
-                                   : gfx::Range::InvalidRange();
+    const gfx::Range range = state && state->value.has_value()
+                                 ? gfx::Range(0, state->value->size())
+                                 : gfx::Range::InvalidRange();
     _view->ImeCommitText(base::SysNSStringToUTF16(textField.text), range, 0);
+    [self sendKeyEventWithRemoteButton:kSelect
+                             eventType:blink::WebInputEvent::Type::kKeyDown];
+    [self sendKeyEventWithRemoteButton:kSelect
+                             eventType:blink::WebInputEvent::Type::kKeyUp];
   }
 
   [self hideAndDeleteKeyboard];

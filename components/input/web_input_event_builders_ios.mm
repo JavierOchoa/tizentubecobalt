@@ -11,15 +11,23 @@
 
 #import <UIKit/UIKit.h>
 
+#include <algorithm>
+
 #include "base/apple/foundation_util.h"
 #include "base/notimplemented.h"
 #include "base/notreached.h"
+#include "base/strings/string_util.h"
+#include "base/strings/sys_string_conversions.h"
+#include "base/strings/utf_string_conversion_utils.h"
 #include "build/build_config.h"
+#include "components/input/web_input_event_builders_ios_internal.h"
 #include "third_party/blink/public/common/input/web_pointer_event.h"
 #include "third_party/blink/public/common/input/web_touch_point.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/events/blink/blink_event_util.h"
+#include "ui/events/event_constants.h"
 #include "ui/events/event_utils.h"
+#include "ui/events/keycodes/dom/keycode_converter.h"
 #include "ui/events/keycodes/keyboard_code_conversion.h"
 #include "ui/events/keycodes/keyboard_code_conversion_ios.h"
 
@@ -189,6 +197,8 @@ blink::WebTouchPoint CreateWebTouchPoint(
   return touch;
 }
 
+#if !BUILDFLAG(IS_IOS_TVOS)
+
 NSString* FilterSpecialCharacter(NSString* str) {
   if ([str length] != 1) {
     return str;
@@ -207,6 +217,8 @@ NSString* FilterSpecialCharacter(NSString* str) {
   }
   return result;
 }
+
+#endif  // !BUILDFLAG(IS_IOS_TVOS)
 
 bool IsSystemKeyEvent(const blink::WebKeyboardEvent& event) {
   // Windows and Linux set |isSystemKey| if alt is down. Blink looks at this
@@ -230,9 +242,190 @@ bool IsSystemKeyEvent(const blink::WebKeyboardEvent& event) {
   return event.GetModifiers() & blink::WebInputEvent::kMetaKey;
 }
 
+#if BUILDFLAG(IS_IOS_TVOS)
+
+constexpr uint32_t kUsbKeyboardUsagePage = 0x00070000;
+constexpr std::u16string_view kSimulatorKeyPrefix = u"UIKeyboardHIDUsage";
+
+ui::DomCode DomCodeFromHidUsage(uint32_t hid_usage) {
+  if (hid_usage == static_cast<uint32_t>(UIKeyboardHIDUsageKeyboardReturn)) {
+    return ui::DomCode::ENTER;
+  }
+  if (hid_usage > 0xffff) {
+    return ui::DomCode::NONE;
+  }
+  return ui::KeycodeConverter::UsbKeycodeToDomCode(kUsbKeyboardUsagePage |
+                                                   hid_usage);
+}
+
+bool IsSimulatorSymbolicKey(std::u16string_view characters) {
+  return base::StartsWith(characters, kSimulatorKeyPrefix,
+                          base::CompareCase::SENSITIVE);
+}
+
+bool ReadSingleUnicodeCharacter(std::u16string_view characters,
+                                char32_t* character) {
+  if (characters.empty()) {
+    return false;
+  }
+  size_t index = 0;
+  base_icu::UChar32 code_point = 0;
+  if (!base::ReadUnicodeCharacter(characters.data(), characters.size(), &index,
+                                  &code_point) ||
+      index != characters.size() - 1 || !base::IsValidCodepoint(code_point)) {
+    return false;
+  }
+  *character = code_point;
+  return true;
+}
+
+bool IsValidUtf16(std::u16string_view characters) {
+  for (size_t index = 0; index < characters.size(); ++index) {
+    base_icu::UChar32 code_point = 0;
+    if (!base::ReadUnicodeCharacter(characters.data(), characters.size(),
+                                    &index, &code_point) ||
+        !base::IsValidCodepoint(code_point)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool IsTextDomKeyCharacter(char32_t character) {
+  return base::IsValidCodepoint(character) &&
+         !base::IsUnicodeControl(character) &&
+         !(character >= 0xf700 && character <= 0xf7ff);
+}
+
+std::u16string FilterSpecialCharacters(std::u16string_view characters) {
+  if (characters.size() != 1) {
+    return std::u16string(characters);
+  }
+  if (base::IsUnicodeControl(characters[0]) ||
+      (characters[0] >= 0xf700 && characters[0] <= 0xf7ff)) {
+    return std::u16string();
+  }
+  return std::u16string(characters);
+}
+
+std::u16string TextFromDomKey(ui::DomKey dom_key) {
+  std::u16string text;
+  if (dom_key.IsCharacter() && IsTextDomKeyCharacter(dom_key.ToCharacter())) {
+    base::WriteUnicodeCharacter(dom_key.ToCharacter(), &text);
+  }
+  return text;
+}
+
+void CopyTextToWebEvent(std::u16string_view text, char16_t* destination) {
+  if (text.size() >= blink::WebKeyboardEvent::kTextLengthCap ||
+      !IsValidUtf16(text)) {
+    return;
+  }
+  std::copy(text.begin(), text.end(), destination);
+}
+
+#endif  // BUILDFLAG(IS_IOS_TVOS)
+
 }  // namespace
 
+#if BUILDFLAG(IS_IOS_TVOS)
+
+blink::WebKeyboardEvent internal::BuildWebKeyboardEventForTVOS(
+    const internal::TVOSKeyEventData& data) {
+  const ui::DomCode dom_code = DomCodeFromHidUsage(data.hid_usage);
+  const int modifiers =
+      data.modifiers | ui::DomCodeToWebInputEventModifiers(dom_code);
+  const int event_flags = ui::WebEventModifiersToEventFlags(modifiers);
+
+  ui::DomKey layout_dom_key = ui::DomKey::NONE;
+  ui::KeyboardCode ignored_key_code = ui::VKEY_UNKNOWN;
+  if (!ui::DomCodeToUsLayoutDomKey(dom_code, event_flags, &layout_dom_key,
+                                   &ignored_key_code)) {
+    layout_dom_key = ui::DomKey::NONE;
+  }
+  const ui::KeyboardCode located_key_code =
+      ui::DomCodeToUsLayoutKeyboardCode(dom_code);
+
+  blink::WebKeyboardEvent result(
+      data.is_key_up ? blink::WebInputEvent::Type::kKeyUp
+                     : blink::WebInputEvent::Type::kKeyDown,
+      modifiers, ui::EventTimeStampFromSeconds(data.timestamp_seconds));
+
+  const bool is_numeric_keypad_keycode = located_key_code >= ui::VKEY_NUMPAD0 &&
+                                         located_key_code <= ui::VKEY_NUMPAD9;
+  result.windows_key_code =
+      is_numeric_keypad_keycode
+          ? located_key_code
+          : ui::LocatedToNonLocatedKeyboardCode(located_key_code);
+  result.native_key_code = static_cast<int>(data.hid_usage);
+  result.dom_code = static_cast<int>(dom_code);
+
+  const bool has_symbolic_characters =
+      IsSimulatorSymbolicKey(data.characters) ||
+      IsSimulatorSymbolicKey(data.characters_ignoring_modifiers);
+  char32_t character = 0;
+  if (!has_symbolic_characters &&
+      ReadSingleUnicodeCharacter(data.characters, &character) &&
+      IsTextDomKeyCharacter(character)) {
+    result.dom_key = ui::DomKey::FromCharacter(character);
+  } else {
+    result.dom_key = layout_dom_key;
+  }
+
+  std::u16string text;
+  std::u16string unmodified_text;
+  if (has_symbolic_characters) {
+    if (!(modifiers & blink::WebInputEvent::kControlKey)) {
+      text = TextFromDomKey(layout_dom_key);
+    }
+    ui::DomKey unmodified_dom_key = ui::DomKey::NONE;
+    ui::KeyboardCode unmodified_key_code = ui::VKEY_UNKNOWN;
+    const int unmodified_flags = event_flags & ui::EF_SHIFT_DOWN;
+    if (ui::DomCodeToUsLayoutDomKey(dom_code, unmodified_flags,
+                                    &unmodified_dom_key,
+                                    &unmodified_key_code)) {
+      unmodified_text = TextFromDomKey(unmodified_dom_key);
+    }
+  } else {
+    text = FilterSpecialCharacters(data.characters);
+    unmodified_text =
+        FilterSpecialCharacters(data.characters_ignoring_modifiers);
+  }
+
+  // Keep Chromium's compatibility values for Return and Tab. Non-printable
+  // keys otherwise carry no character text.
+  if (result.windows_key_code == ui::VKEY_RETURN) {
+    text = u"\r";
+    unmodified_text = u"\r";
+  } else if (result.windows_key_code == ui::VKEY_TAB) {
+    text = u"\t";
+    unmodified_text = u"\t";
+  }
+
+  CopyTextToWebEvent(text, result.text.data());
+  CopyTextToWebEvent(unmodified_text, result.unmodified_text.data());
+  result.is_system_key = IsSystemKeyEvent(result);
+  return result;
+}
+
+#endif  // BUILDFLAG(IS_IOS_TVOS)
+
 blink::WebKeyboardEvent WebKeyboardEventBuilder::Build(gfx::NativeEvent event) {
+#if BUILDFLAG(IS_IOS_TVOS)
+  UIPress* press = std::get<base::apple::OwnedUIPress>(event).Get();
+  CHECK(press);
+  const std::u16string characters =
+      base::SysNSStringToUTF16(press.key.characters);
+  const std::u16string characters_ignoring_modifiers =
+      base::SysNSStringToUTF16(press.key.charactersIgnoringModifiers);
+  return internal::BuildWebKeyboardEventForTVOS(
+      {.hid_usage = static_cast<uint32_t>(press.key.keyCode),
+       .characters = characters,
+       .characters_ignoring_modifiers = characters_ignoring_modifiers,
+       .modifiers = ModifiersFromEvent(press.key.modifierFlags),
+       .is_key_up = press.phase == UIPressPhaseEnded,
+       .timestamp_seconds = press.timestamp});
+#else
   ui::DomCode dom_code;
   ui::DomKey dom_key;
   bool is_key_up = false;
@@ -240,19 +433,6 @@ blink::WebKeyboardEvent WebKeyboardEventBuilder::Build(gfx::NativeEvent event) {
   ui::KeyboardCode key_code;
   NSString* key_characters;
   UIKeyModifierFlags flags;
-#if BUILDFLAG(IS_IOS_TVOS)
-  UIPress* press = std::get<base::apple::OwnedUIPress>(event).Get();
-  CHECK(press);
-
-  // KeyCode from UIPress is UIKeyboardHIDUsage. Convert it to ui::KeyboardCode.
-  key_code = ui::KeyboardCodeFromUIKeyCode(press.key.keyCode);
-  dom_code = ui::DomCodeFromUIPress(press, key_code);
-  is_key_up = press.phase == UIPressPhaseEnded;
-  time_stamp_seconds = press.timestamp;
-  dom_key = ui::DomKeyFromKeyboardCode(press, key_code);
-  key_characters = press.key.characters;
-  flags = press.key.modifierFlags;
-#else
   BEKeyEntry* entry = std::get<base::apple::OwnedBEKeyEntry>(event).Get();
   CHECK(entry);
 
@@ -264,7 +444,6 @@ blink::WebKeyboardEvent WebKeyboardEventBuilder::Build(gfx::NativeEvent event) {
   dom_key = ui::DomKeyFromBEKeyEntry(entry);
   key_characters = entry.key.characters;
   flags = entry.key.modifierFlags;
-#endif
   int modifiers =
       ModifiersFromEvent(flags) | ui::DomCodeToWebInputEventModifiers(dom_code);
 
@@ -310,6 +489,7 @@ blink::WebKeyboardEvent WebKeyboardEventBuilder::Build(gfx::NativeEvent event) {
   result.is_system_key = IsSystemKeyEvent(result);
 
   return result;
+#endif  // BUILDFLAG(IS_IOS_TVOS)
 }
 
 blink::WebGestureEvent WebGestureEventBuilder::Build(UIEvent*, UIView*) {

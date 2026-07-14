@@ -4,6 +4,7 @@
 
 import("//build/config/ui.gni")
 import("//mojo/public/tools/bindings/mojom.gni")
+import("//testing/test.gni")
 
 assert(
     use_blink,
@@ -133,6 +134,7 @@ component("input") {
       "native_web_keyboard_event_ios.mm",
       "web_input_event_builders_ios.h",
       "web_input_event_builders_ios.mm",
+      "web_input_event_builders_ios_internal.h",
     ]
   }
   if (is_mac) {
@@ -208,6 +210,30 @@ source_set("unit_tests") {
     sources += [
       "native_web_keyboard_event_mac_unittest.mm",
       "web_input_event_builders_mac_unittest.mm",
+    ]
+  }
+  if (is_ios && target_platform == "tvos") {
+    deps += [ ":tvos_unit_tests" ]
+  }
+}
+
+if (is_ios && target_platform == "tvos") {
+  source_set("tvos_unit_tests") {
+    testonly = true
+    sources = [ "web_input_event_builders_ios_unittest.mm" ]
+    deps = [
+      ":input",
+      "//testing/gtest",
+      "//third_party/blink/public/common:headers",
+      "//ui/events:dom_keycode_converter",
+      "//ui/events:events",
+    ]
+  }
+
+  test("input_tvos_unittests") {
+    deps = [
+      ":tvos_unit_tests",
+      "//base/test:run_all_unittests",
     ]
   }
 }
