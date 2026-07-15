@@ -19,16 +19,98 @@
   const installedAdapter = window[ADAPTER_KEY];
   if (installedAdapter) {
     installedAdapter.synchronizeRoute();
+    if (typeof installedAdapter.synchronizeNavigation === 'function') {
+      installedAdapter.synchronizeNavigation();
+    }
     return;
   }
 
   const INPUT_ID = 'cobalt-tvos-youtube-search-input';
-  const SEARCH_SUBMITTED_KEY = 'cobalt.tvos.youtubeSearchSubmitted';
+  const HOME_SEARCH_HIDDEN_ATTRIBUTE =
+      'data-cobalt-tvos-hidden-on-home';
   let input = null;
   let previousFocus = null;
   let active = false;
+  let reloadSubmittedSearch = false;
   let focusRetryTimers = [];
   let focusRecoveryTimer = null;
+  let navigationObserver = null;
+  let navigationSyncScheduled = false;
+  const homeSearchDisplayStyles = new WeakMap();
+
+  function homeEntry() {
+    return document.querySelector(
+        'ytlr-guide-entry-renderer[aria-label="Home"]');
+  }
+
+  function homeIsSelected(entry) {
+    return !!entry &&
+        !!entry.querySelector('.ToslSc, ytlr-button.fcGEVd');
+  }
+
+  function synchronizeHomeSearchVisibility() {
+    navigationSyncScheduled = false;
+    const entry = homeEntry();
+    const shouldHide = homeIsSelected(entry);
+    for (const searchBar of document.querySelectorAll('ytlr-search-bar')) {
+      const isHidden = searchBar.hasAttribute(HOME_SEARCH_HIDDEN_ATTRIBUTE);
+      if (shouldHide) {
+        const focusWasInSearch = searchBar.contains(document.activeElement);
+        if (!isHidden) {
+          homeSearchDisplayStyles.set(searchBar, {
+            value: searchBar.style.getPropertyValue('display'),
+            priority: searchBar.style.getPropertyPriority('display'),
+          });
+          searchBar.setAttribute(HOME_SEARCH_HIDDEN_ATTRIBUTE, '');
+        }
+        if (searchBar.style.getPropertyValue('display') !== 'none' ||
+            searchBar.style.getPropertyPriority('display') !== 'important') {
+          searchBar.style.setProperty('display', 'none', 'important');
+        }
+        if (focusWasInSearch) {
+          hideKeyboard();
+          const homeButton = entry.querySelector('ytlr-button');
+          if (homeButton && typeof homeButton.focus === 'function') {
+            homeButton.focus();
+          }
+        }
+      } else if (isHidden) {
+        searchBar.removeAttribute(HOME_SEARCH_HIDDEN_ATTRIBUTE);
+        const previousDisplay = homeSearchDisplayStyles.get(searchBar);
+        if (previousDisplay && previousDisplay.value) {
+          searchBar.style.setProperty(
+              'display', previousDisplay.value, previousDisplay.priority);
+        } else {
+          searchBar.style.removeProperty('display');
+        }
+        homeSearchDisplayStyles.delete(searchBar);
+      }
+    }
+  }
+
+  function scheduleHomeSearchSynchronization() {
+    if (navigationSyncScheduled) {
+      return;
+    }
+    navigationSyncScheduled = true;
+    Promise.resolve().then(synchronizeHomeSearchVisibility);
+  }
+
+  function installHomeSearchSuppression() {
+    if (navigationObserver) {
+      scheduleHomeSearchSynchronization();
+      return;
+    }
+    navigationObserver = new MutationObserver(
+        scheduleHomeSearchSynchronization);
+    navigationObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class', 'style'],
+      childList: true,
+      subtree: true,
+    });
+    synchronizeHomeSearchVisibility();
+  }
 
   function searchRoute() {
     const fragment = window.location.hash.replace(/^#/, '');
@@ -93,17 +175,8 @@
     parameters.set('inApp', 'true');
     parameters.set('q', query);
     url.hash = `/search?${parameters.toString()}`;
-    const shouldReload =
-        window.sessionStorage.getItem(SEARCH_SUBMITTED_KEY) === 'true';
-    window.sessionStorage.setItem(SEARCH_SUBMITTED_KEY, 'true');
+    reloadSubmittedSearch = true;
     window.location.assign(url.toString());
-    // YouTube TV does not reliably refresh its search controller when a
-    // second query changes only the hash in the same SPA document. Reload the
-    // completed deep link so later submissions are handled as application
-    // launch routes, including searches made after returning from playback.
-    if (shouldReload) {
-      window.setTimeout(() => window.location.reload(), 500);
-    }
   }
 
   function focusInputAndShowKeyboard() {
@@ -226,6 +299,12 @@
 
   function synchronizeRoute() {
     const route = searchRoute();
+    if (reloadSubmittedSearch && route && !route.isEntry) {
+      reloadSubmittedSearch = false;
+      deactivate(false);
+      window.setTimeout(() => window.location.reload(), 0);
+      return;
+    }
     if (!route || !route.isEntry) {
       deactivate(false);
       return;
@@ -234,8 +313,12 @@
   }
 
   Object.defineProperty(window, ADAPTER_KEY, {
-    value: Object.freeze({synchronizeRoute}),
+    value: Object.freeze({
+      synchronizeRoute,
+      synchronizeNavigation: scheduleHomeSearchSynchronization,
+    }),
   });
+  installHomeSearchSuppression();
   window.addEventListener('hashchange', synchronizeRoute);
   document.addEventListener('focusin', recoverInputFocus, true);
   if (document.readyState === 'loading') {

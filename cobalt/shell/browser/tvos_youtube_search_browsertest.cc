@@ -45,7 +45,17 @@ std::unique_ptr<net::test_server::HttpResponse> HandleYouTubeRequest(
   response->set_code(net::HTTP_OK);
   response->set_content_type("text/html");
   response->set_content(
-      "<!doctype html><button id=previous autofocus>Previous</button>");
+      "<!doctype html>"
+      "<button id=previous autofocus>Previous</button>"
+      "<ytlr-guide-entry-renderer aria-label=Search>"
+      "<ytlr-button id=search-tab class=fcGEVd tabindex=-1></ytlr-button>"
+      "</ytlr-guide-entry-renderer>"
+      "<ytlr-guide-entry-renderer aria-label=Home>"
+      "<ytlr-button id=home-tab tabindex=-1></ytlr-button>"
+      "</ytlr-guide-entry-renderer>"
+      "<ytlr-search-bar id=home-search>"
+      "<button id=home-search-button>Search from Home</button>"
+      "</ytlr-search-bar>");
   return response;
 }
 
@@ -100,6 +110,30 @@ IN_PROC_BROWSER_TEST_F(TvOSYouTubeSearchBrowserTest,
   EXPECT_EQ(1, EvalJs(shell(), "document.querySelectorAll('#" +
                                    std::string(kInputId) + "').length")
                    .ExtractInt());
+
+  EXPECT_TRUE(EvalJs(shell(), R"JS(
+    (async () => {
+      const homeTab = document.getElementById('home-tab');
+      const searchTab = document.getElementById('search-tab');
+      const searchBar = document.getElementById('home-search');
+      document.getElementById('home-search-button').focus();
+      searchTab.classList.remove('fcGEVd');
+      homeTab.classList.add('fcGEVd');
+      await new Promise(resolve => setTimeout(resolve, 0));
+      const hiddenOnHome = getComputedStyle(searchBar).display === 'none' &&
+          document.activeElement === homeTab;
+      searchBar.style.setProperty('display', 'block', 'important');
+      await new Promise(resolve => setTimeout(resolve, 0));
+      const rehiddenAfterYouTubeUpdate =
+          getComputedStyle(searchBar).display === 'none';
+      homeTab.classList.remove('fcGEVd');
+      searchTab.classList.add('fcGEVd');
+      await new Promise(resolve => setTimeout(resolve, 0));
+      return hiddenOnHome && rehiddenAfterYouTubeUpdate &&
+          getComputedStyle(searchBar).display !== 'none';
+    })()
+  )JS")
+                  .ExtractBool());
 
   EXPECT_TRUE(EvalJs(shell(), R"JS(
     (async () => {
@@ -178,26 +212,32 @@ IN_PROC_BROWSER_TEST_F(TvOSYouTubeSearchBrowserTest,
   )JS")
                   .ExtractBool());
 
-  EXPECT_EQ("/tv?launch=menu#/search?inApp=true&q=caf%C3%A9+%26+music",
-            EvalJs(shell(), R"JS(
+  ASSERT_TRUE(ExecJs(shell(), R"JS(
     (async () => {
       location.hash = '/home';
       await new Promise(resolve => setTimeout(resolve, 0));
       location.hash = '/search';
       await new Promise(resolve => setTimeout(resolve, 0));
-      const input = document.getElementById(
-          'cobalt-tvos-youtube-search-input');
-      input.value = '  café & music  ';
-      input.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'Enter', bubbles: true, cancelable: true
-      }));
-      await new Promise(resolve => setTimeout(resolve, 0));
-      return location.pathname + location.search + location.hash;
     })()
-  )JS")
-                .ExtractString());
+  )JS"));
+  TestNavigationObserver first_search_observer(shell()->web_contents(), 2);
+  ASSERT_TRUE(ExecJs(shell(), R"JS(
+    const input = document.getElementById(
+        'cobalt-tvos-youtube-search-input');
+    input.value = '  café & music  ';
+    input.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter', bubbles: true, cancelable: true
+    }));
+  )JS"));
+  first_search_observer.Wait();
+  EXPECT_EQ("/tv?launch=menu#/search?inApp=true&q=caf%C3%A9+%26+music",
+            shell()->web_contents()->GetLastCommittedURL().PathForRequest() +
+                "#" + shell()->web_contents()->GetLastCommittedURL().ref());
+  // The production adapter is registered for the exact YouTube origin. This
+  // test server uses a dynamic port, so restore the adapter after the reload.
+  InjectAdapter();
 
-  // Return to Search and verify a second submission reloads the completed
+  // Return to Search and verify another submission also reloads its completed
   // deep link instead of leaving YouTube's SPA search controller stale.
   ASSERT_TRUE(ExecJs(shell(), R"JS(
     (async () => {
