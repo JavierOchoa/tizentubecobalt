@@ -44,6 +44,9 @@
 #include "cobalt/shell/common/shell_switches.h"
 #include "cobalt/shell/common/url_constants.h"
 #include "cobalt/shell/embedded_resources/embedded_js.h"
+#if BUILDFLAG(IS_IOS_TVOS)
+#include "cobalt/shell/embedded_resources/tvos_javascript.h"
+#endif
 #include "components/custom_handlers/protocol_handler.h"
 #include "components/custom_handlers/protocol_handler_registry.h"
 #include "content/public/browser/browser_context.h"
@@ -595,27 +598,30 @@ void Shell::DidStopLoading() {
 }
 
 void Shell::RegisterInjectedJavaScript() {
-  // Get the embedded header resource
-  GeneratedResourceMap resource_map;
-  CobaltJavaScriptPolyfill::GenerateMap(resource_map);
-
-  for (const auto& [file_name, file_contents] : resource_map) {
-    LOG(INFO) << "JS injection for filename: " << file_name;
-    std::string js(reinterpret_cast<const char*>(file_contents.data),
-                   file_contents.size);
-
-    // Inject a script at document start for all origins
-    const std::u16string script(base::UTF8ToUTF16(js));
-    const std::vector<std::string> allowed_origins({"*"});
-    auto result = js_communication_host_->AddDocumentStartJavaScript(
-        script, allowed_origins);
-
-    if (result.error_message.has_value()) {
-      // error_message contains a value
-      LOG(WARNING) << "Failed to register JS injection for:" << file_name
-                   << ", error message: " << result.error_message.value();
+  auto register_scripts = [this](const GeneratedResourceMap& resource_map,
+                                 const std::vector<std::string>& origins) {
+    for (const auto& [file_name, file_contents] : resource_map) {
+      LOG(INFO) << "JS injection for filename: " << file_name;
+      const std::string js(reinterpret_cast<const char*>(file_contents.data),
+                           file_contents.size);
+      auto result = js_communication_host_->AddDocumentStartJavaScript(
+          base::UTF8ToUTF16(js), origins);
+      if (result.error_message.has_value()) {
+        LOG(WARNING) << "Failed to register JS injection for: " << file_name
+                     << ", error message: " << result.error_message.value();
+      }
     }
-  }
+  };
+
+  GeneratedResourceMap polyfill_resource_map;
+  CobaltJavaScriptPolyfill::GenerateMap(polyfill_resource_map);
+  register_scripts(polyfill_resource_map, {"*"});
+
+#if BUILDFLAG(IS_IOS_TVOS)
+  GeneratedResourceMap tvos_resource_map;
+  CobaltTvOSJavaScript::GenerateMap(tvos_resource_map);
+  register_scripts(tvos_resource_map, {"https://www.youtube.com"});
+#endif
 }
 
 void Shell::LoadSplashScreenWebContents() {

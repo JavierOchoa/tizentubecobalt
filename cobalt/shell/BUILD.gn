@@ -128,6 +128,10 @@ group("cobalt_shell_lib_deps") {
       "//services/tracing/public/cpp",
       "//services/tracing/public/mojom:mojom",
     ]
+
+    if (target_platform == "tvos") {
+      public_deps += [ ":embed_tvos_javascript" ]
+    }
   }
 
   if (is_android) {
@@ -510,4 +514,19 @@ action("embed_polyfilled_javascript") {
     rebase_path("embedded_resources/cobalt_java_script_polyfill",
                 root_build_dir),
   ]
+}
+
+if (is_ios && target_platform == "tvos") {
+  action("embed_tvos_javascript") {
+    script = "//cobalt/build/generate_data_header.py"
+    sources = [ "embedded_resources/tvos_youtube_search.js" ]
+    outputs = [ "$target_gen_dir/embedded_resources/tvos_javascript.h" ]
+    public_configs = [ ":embed_polyfilled_javascript_config" ]
+
+    args = [
+      "CobaltTvOSJavaScript",
+      rebase_path(outputs[0], root_build_dir),
+      rebase_path(sources[0], root_build_dir),
+    ]
+  }
 }
