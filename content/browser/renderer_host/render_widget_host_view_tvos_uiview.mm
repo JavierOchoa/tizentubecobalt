@@ -439,12 +439,23 @@ RemoteButton remoteButtonFromPressType(UIPressType type) {
 }
 
 - (void)hideAndDeleteKeyboard {
+  if (!_textFieldForAllTextInput) {
+    return;
+  }
+
   // Programmatic hides should not be reported as user cancellation. User
   // commits/cancellations reach the delegate before this cleanup method.
   _textFieldForAllTextInput.delegate = nil;
   [_textFieldForAllTextInput resignFirstResponder];
   [_textFieldForAllTextInput removeFromSuperview];
   _textFieldForAllTextInput = nil;
+
+  // The temporary text field owns the responder chain while the full-screen
+  // keyboard is visible. Hand it back explicitly so remote and hardware-key
+  // events reach Blink again after a commit, cancellation, or programmatic
+  // hide. UIKit does not automatically restore the previous responder when a
+  // text field is removed.
+  [self becomeFirstResponder];
 }
 
 - (const ui::mojom::TextInputState*)editState {

@@ -23,6 +23,7 @@
   }
 
   const INPUT_ID = 'cobalt-tvos-youtube-search-input';
+  const SEARCH_SUBMITTED_KEY = 'cobalt.tvos.youtubeSearchSubmitted';
   let input = null;
   let previousFocus = null;
   let active = false;
@@ -92,7 +93,17 @@
     parameters.set('inApp', 'true');
     parameters.set('q', query);
     url.hash = `/search?${parameters.toString()}`;
+    const shouldReload =
+        window.sessionStorage.getItem(SEARCH_SUBMITTED_KEY) === 'true';
+    window.sessionStorage.setItem(SEARCH_SUBMITTED_KEY, 'true');
     window.location.assign(url.toString());
+    // YouTube TV does not reliably refresh its search controller when a
+    // second query changes only the hash in the same SPA document. Reload the
+    // completed deep link so later submissions are handled as application
+    // launch routes, including searches made after returning from playback.
+    if (shouldReload) {
+      window.setTimeout(() => window.location.reload(), 500);
+    }
   }
 
   function focusInputAndShowKeyboard() {

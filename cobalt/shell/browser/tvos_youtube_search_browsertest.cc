@@ -23,6 +23,7 @@
 #include "cobalt/testing/browser_tests/content_browser_test_utils.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "content/public/test/test_navigation_observer.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/http_request.h"
@@ -69,6 +70,12 @@ class TvOSYouTubeSearchBrowserTest : public ContentBrowserTest {
     replacements.SetRefStr("/search");
     ASSERT_TRUE(NavigateToURL(shell(), url.ReplaceComponents(replacements)));
 
+    InjectAdapter();
+    InjectAdapter();
+  }
+
+ protected:
+  void InjectAdapter() {
     GeneratedResourceMap resources;
     CobaltTvOSJavaScript::GenerateMap(resources);
     const auto script = resources.find("tvos_youtube_search.js");
@@ -76,12 +83,8 @@ class TvOSYouTubeSearchBrowserTest : public ContentBrowserTest {
     ASSERT_TRUE(ExecJs(
         shell(), std::string(reinterpret_cast<const char*>(script->second.data),
                              script->second.size)));
-    ASSERT_TRUE(ExecJs(
-        shell(), std::string(reinterpret_cast<const char*>(script->second.data),
-                             script->second.size)));
   }
 
- protected:
   net::EmbeddedTestServer https_server_;
 };
 
@@ -194,9 +197,28 @@ IN_PROC_BROWSER_TEST_F(TvOSYouTubeSearchBrowserTest,
   )JS")
                 .ExtractString());
 
-  EXPECT_EQ(1, EvalJs(shell(), "document.querySelectorAll('#" +
-                                   std::string(kInputId) + "').length")
-                   .ExtractInt());
+  // Return to Search and verify a second submission reloads the completed
+  // deep link instead of leaving YouTube's SPA search controller stale.
+  ASSERT_TRUE(ExecJs(shell(), R"JS(
+    (async () => {
+      location.hash = '/home';
+      await new Promise(resolve => setTimeout(resolve, 0));
+      location.hash = '/search';
+      await new Promise(resolve => setTimeout(resolve, 0));
+    })()
+  )JS"));
+  TestNavigationObserver second_search_observer(shell()->web_contents(), 2);
+  ASSERT_TRUE(ExecJs(shell(), R"JS(
+    const input = document.getElementById(
+        'cobalt-tvos-youtube-search-input');
+    input.value = 'second query';
+    input.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter', bubbles: true, cancelable: true
+    }));
+  )JS"));
+  second_search_observer.Wait();
+  EXPECT_EQ("/search?inApp=true&q=second+query",
+            shell()->web_contents()->GetLastCommittedURL().ref());
 }
 
 }  // namespace
