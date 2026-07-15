@@ -245,6 +245,12 @@ test("cobalt_browsertests") {
     sources += [ "browsertests_apk/content_browser_tests_jni_onload.cc" ]
   }
 
+  if (is_ios && target_platform == "tvos") {
+    sources += [
+      "//cobalt/shell/browser/tvos_youtube_search_browsertest.cc",
+    ]
+  }
+
   if (is_starboard) {
     sources += [ "cobalt_browser_tests_main.cc" ]
   }
@@ -405,7 +411,10 @@ test("cobalt_browsertests") {
       ":cobalt_shell_pak_bundle_data",
       ":cobalt_test_bundle_data",
     ]
-    deps += [ "//starboard/common:common" ]
+    deps += [
+      "//cobalt/shell:embed_tvos_javascript",
+      "//starboard/common:common",
+    ]
   }
 
   if (is_android) {

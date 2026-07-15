@@ -523,6 +523,13 @@ RemoteButton remoteButtonFromPressType(UIPressType type) {
                              eventType:blink::WebInputEvent::Type::kKeyDown];
     [self sendKeyEventWithRemoteButton:kSelect
                              eventType:blink::WebInputEvent::Type::kKeyUp];
+  } else {
+    // Let the focused web input observe cancellation. The tvOS search adapter
+    // uses Escape to discard its pending query and restore page focus.
+    [self sendKeyEventWithRemoteButton:kMenu
+                             eventType:blink::WebInputEvent::Type::kKeyDown];
+    [self sendKeyEventWithRemoteButton:kMenu
+                             eventType:blink::WebInputEvent::Type::kKeyUp];
   }
 
   [self hideAndDeleteKeyboard];
