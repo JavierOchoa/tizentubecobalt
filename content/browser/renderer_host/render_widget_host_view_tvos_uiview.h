@@ -25,6 +25,9 @@
   // Set on pressesBegan for kSelect when an input field is focused, cleared and
   // used on pressesEnded to show the keyboard.
   BOOL _selectWillShowKeyboard;
+  // Tracks a Menu press consumed to cancel the native keyboard so its key-up
+  // is not propagated to tvOS as a request to leave the application.
+  BOOL _menuDismissedKeyboard;
 }
 
 - (instancetype)initWithWidget:

@@ -101,7 +101,7 @@ IN_PROC_BROWSER_TEST_F(TvOSYouTubeSearchBrowserTest,
   EXPECT_TRUE(EvalJs(shell(), R"JS(
     (async () => {
       document.getElementById('previous').focus();
-      await new Promise(resolve => requestAnimationFrame(resolve));
+      await new Promise(resolve => setTimeout(resolve, 100));
       return document.activeElement.id ===
           'cobalt-tvos-youtube-search-input';
     })()

@@ -273,6 +273,20 @@ RemoteButton remoteButtonFromPressType(UIPressType type) {
   BOOL needToHandleInFramework = NO;
   for (UIPress* press in presses) {
     RemoteButton button = remoteButtonFromPressType(press.type);
+    if (button == kMenu &&
+        (_textFieldForAllTextInput || _menuDismissedKeyboard)) {
+      if (type == blink::WebInputEvent::Type::kKeyDown) {
+        _menuDismissedKeyboard = YES;
+        [self sendKeyEventWithRemoteButton:kMenu
+                                 eventType:blink::WebInputEvent::Type::kKeyDown];
+        [self hideAndDeleteKeyboard];
+      } else {
+        [self sendKeyEventWithRemoteButton:kMenu
+                                 eventType:blink::WebInputEvent::Type::kKeyUp];
+        _menuDismissedKeyboard = NO;
+      }
+      continue;
+    }
     if (button == kNone) {
       // Since UIPress has key information from the physical keyboard,
       // NativeWebKeyboardEvent is built with it in `sendKeyboardEvent`.
@@ -396,9 +410,17 @@ RemoteButton remoteButtonFromPressType(UIPressType type) {
     return;
   }
 
-  _textFieldForAllTextInput = [[UITextField alloc] init];
+  // A zero-sized UITextField no longer receives remote or hardware keyboard
+  // edits reliably on tvOS 26. Keep a minimally sized field in the view while
+  // the full-screen system keyboard is active.
+  _textFieldForAllTextInput =
+      [[UITextField alloc] initWithFrame:CGRectMake(0, 0, 1, 1)];
   _textFieldForAllTextInput.delegate = self;
   _textFieldForAllTextInput.keyboardType = keyboardTypeForInputType(state.type);
+  _textFieldForAllTextInput.returnKeyType = UIReturnKeyDone;
+  // Empty Done must remain selectable so the web adapter can close the
+  // keyboard without navigating.
+  _textFieldForAllTextInput.enablesReturnKeyAutomatically = NO;
   if (state.value.has_value()) {
     _textFieldForAllTextInput.text =
         base::SysUTF16ToNSString(state.value.value());
@@ -417,6 +439,10 @@ RemoteButton remoteButtonFromPressType(UIPressType type) {
 }
 
 - (void)hideAndDeleteKeyboard {
+  // Programmatic hides should not be reported as user cancellation. User
+  // commits/cancellations reach the delegate before this cleanup method.
+  _textFieldForAllTextInput.delegate = nil;
+  [_textFieldForAllTextInput resignFirstResponder];
   [_textFieldForAllTextInput removeFromSuperview];
   _textFieldForAllTextInput = nil;
 }

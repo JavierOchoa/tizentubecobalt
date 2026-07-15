@@ -26,7 +26,8 @@
   let input = null;
   let previousFocus = null;
   let active = false;
-  let focusFramePending = false;
+  let focusRetryTimers = [];
+  let focusRecoveryTimer = null;
 
   function searchRoute() {
     const fragment = window.location.hash.replace(/^#/, '');
@@ -66,6 +67,14 @@
       return;
     }
     active = false;
+    for (const timer of focusRetryTimers) {
+      window.clearTimeout(timer);
+    }
+    focusRetryTimers = [];
+    if (focusRecoveryTimer !== null) {
+      window.clearTimeout(focusRecoveryTimer);
+      focusRecoveryTimer = null;
+    }
     hideKeyboard();
     input.blur();
     if (shouldRestoreFocus) {
@@ -100,23 +109,39 @@
     }
   }
 
-  function maintainInputFocus() {
-    focusFramePending = false;
-    if (!active) {
+  function settleInputFocus() {
+    // YouTube moves focus while it renders the search route. Retry for a short,
+    // bounded period instead of fighting its focus manager every animation
+    // frame, which repeatedly tears down the native tvOS keyboard session.
+    for (const delay of [50, 150, 300]) {
+      focusRetryTimers.push(window.setTimeout(() => {
+        if (!active || document.activeElement === input) {
+          return;
+        }
+        if (document.activeElement && document.activeElement !== document.body) {
+          previousFocus = document.activeElement;
+        }
+        focusInputAndShowKeyboard();
+      }, delay));
+    }
+  }
+
+  function recoverInputFocus(event) {
+    if (!active || event.target === input) {
       return;
     }
-
-    // YouTube focuses its non-editable keyboard after rendering the route.
-    // Keep the adapter focused so native text commits and Done reach it.
-    if (document.activeElement !== input) {
-      if (document.activeElement && document.activeElement !== document.body) {
-        previousFocus = document.activeElement;
-      }
-      focusInputAndShowKeyboard();
+    if (event.target && event.target !== document.body) {
+      previousFocus = event.target;
     }
-
-    focusFramePending = true;
-    window.requestAnimationFrame(maintainInputFocus);
+    if (focusRecoveryTimer !== null) {
+      window.clearTimeout(focusRecoveryTimer);
+    }
+    focusRecoveryTimer = window.setTimeout(() => {
+      focusRecoveryTimer = null;
+      if (active && document.activeElement !== input) {
+        focusInputAndShowKeyboard();
+      }
+    }, 75);
   }
 
   function handleKeyDown(event) {
@@ -185,10 +210,7 @@
     active = true;
     input.value = '';
     focusInputAndShowKeyboard();
-    if (!focusFramePending) {
-      focusFramePending = true;
-      window.requestAnimationFrame(maintainInputFocus);
-    }
+    settleInputFocus();
   }
 
   function synchronizeRoute() {
@@ -204,6 +226,7 @@
     value: Object.freeze({synchronizeRoute}),
   });
   window.addEventListener('hashchange', synchronizeRoute);
+  document.addEventListener('focusin', recoverInputFocus, true);
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', synchronizeRoute,
                               {once: true});
